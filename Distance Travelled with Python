@@ -1,0 +1,32 @@
+import pandas as pd
+from math import radians, sin, cos, sqrt, atan2
+
+def haversine(lat1, lon1, lat2, lon2):
+    # Convert latitude and longitude from degrees to radians
+    lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
+
+    # Haversine formula
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    a = sin(dlat / 2)**2 + cos(lat1) * cos(lat2) * sin(dlon / 2)**2
+    c = 2 * atan2(sqrt(a), sqrt(1 - a))
+    # Earth's radius in kilometers
+    R = 6371.0
+    distance = R * c
+    return distance
+
+# Read the Excel file
+df = pd.read_excel(r'D:\BND\man_geo.xlsx')
+
+# Calculate distances and store them in a new column
+distances = []
+for index, row in df.iterrows():
+    lat1, lon1 = row['Lat1'], row['Lon1']
+    lat2, lon2 = row['Lat2'], row['Lon2']
+    distance = haversine(lat1, lon1, lat2, lon2)
+    distances.append(distance)
+
+df['Distance'] = distances
+
+# Export the DataFrame to a new Excel file
+df.to_excel('output_file.xlsx', index=False)
