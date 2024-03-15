@@ -1,0 +1,777 @@
+import pandas as pd
+import os
+import csv
+import numpy as np
+from openpyxl import Workbook
+from openpyxl.styles import PatternFill, Border, NamedStyle, Font
+from openpyxl.styles import PatternFill, Border, NamedStyle, Font, Side
+from openpyxl.styles import numbers
+from openpyxl.utils import get_column_letter  # Import get_column_letter
+from jinja2 import Template
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.mime.application import MIMEApplication
+from datetime import datetime
+
+number_system = "INR"
+
+
+# Function to send email with HTML table in the body
+def send_email(sender_email, receiver_email, cc_email, subject, body, attachment_path, host, port, username, password):
+    message = MIMEMultipart()
+    message['From'] = sender_email
+    message['To'] = receiver_email
+    message['Cc'] = ", ".join(cc_email)  # Join CC emails with commas
+    message['Subject'] = subject
+
+    # Attach body text
+    message.attach(MIMEText(body, 'html'))
+
+    # Attach the file
+    with open(attachment_path, 'rb') as attachment:
+        part = MIMEApplication(attachment.read(), Name=os.path.basename(attachment_path))
+        part['Content-Disposition'] = f'attachment; filename="{os.path.basename(attachment_path)}"'
+        message.attach(part)
+
+    # Connect to the server
+    try:
+        with smtplib.SMTP(host, port) as server:
+            server.starttls()
+            server.login(username, password)
+            server.sendmail(sender_email, [receiver_email] + cc_email, message.as_string())  # Include CC emails in the recipients list
+        print(f"Email sent to {receiver_email} with CC {cc_email} successfully.")
+    except Exception as e:
+        print(f"Error sending email to {receiver_email} with CC {cc_email}: {e}")
+
+
+# Replace with your file paths and email information
+csv_file_path = r'D:\BND\Sales Folder\Sale.xlsx'
+state_zone_file_path = r'D:\BND\DB_maste.xlsx'
+output_excel_path = r'D:\BND\output_result.xlsx'
+email_mapping_file_path = r'D:\BND\email_addresses.xlsx'
+primary_sales_file_path = r'D:\BND\Sales Folder\Primary_sales.xlsx'
+outlet_file = r'D:\BND\Outlet_master.xlsx'
+order_csv_file_path = r'D:\BND\Sales Folder\Order.xlsx'
+call_csv_file_path = r'D:\BND\Sales Folder\Call.xlsx'
+
+# Modify the email body for all State_Heads
+current_month = datetime.now().strftime('%B')
+
+email_host = 'smtp.gmail.com'
+email_port = 587  # Adjust the port according to your email server
+email_username = 'dhanraj.u@stovekraft.com'
+email_password = 'cekk jjvg xfyv pncs'
+
+sender_email = 'balakumar.s@stovekraft.com'
+email_subject = 'Secondary Sales Tracker of Distributor - {}'.format(current_month)
+
+# Read the CSV file into a DataFrame with Latin-1 encoding
+
+df = pd.read_excel(csv_file_path)
+
+# Read the state and zone information from the Excel file into another DataFrame
+state_zone_df = pd.read_excel(state_zone_file_path)
+
+# Clean up column names in state_zone_df
+state_zone_df.columns = state_zone_df.columns.str.strip()
+
+# Read the email mapping information from the Excel file into another DataFrame
+email_mapping_df = pd.read_excel(email_mapping_file_path)
+
+# Clean up column names in email_mapping_df
+email_mapping_df.columns = email_mapping_df.columns.str.strip()
+
+# Ensure the column names match after cleaning
+result = pd.merge(left=state_zone_df, right=df, on='DB_Code', how='left')
+
+
+# Check for column name discrepancies
+if 'Distributor_Name_x' in result.columns:
+    distributor_name_column = 'Distributor_Name_x'
+elif 'Distributor_Name_y' in result.columns:
+    distributor_name_column = 'Distributor_Name_y'
+else:
+    raise ValueError("Distributor_Name column not found in the result DataFrame.")
+
+aggregated_result = result.groupby(['DB_Code', 'State_ Head', 'Distributor_Name_x','DMS Type','DMS Flag','DB_Status']).agg({
+    'Region': 'first',
+    'Status':'first',
+    'Taxable_Value': 'sum',  # Replace 'Overall Sec Sales' with 'Taxable_Value'
+    'Outlet_ID': 'nunique',
+    'Invoice No.': 'count',
+    'ID': 'nunique',
+    }).reset_index()
+
+
+
+# Assuming 'result' is your original DataFrame
+aggregated_result_12 = (
+    result.groupby(['Outlet_ID','DB_Code','State_ Head','DB_Status'])
+    .agg({'Taxable_Value': 'sum'})  # Group by Outlet_ID and DB_Code, aggregate taxable values
+    .reset_index()  # Reset index to get a DataFrame format
+    .query('Taxable_Value >= 200000')  # Filter for total taxable value >= 200 lakhs
+)
+
+aggregated_result_12 = aggregated_result_12[['Outlet_ID', 'DB_Code','State_ Head', 'Taxable_Value','DB_Status']]
+
+
+# Convert DataFrame to HTML table
+html_table_12 = aggregated_result_12.to_html(index=False)
+
+#Group by 'State_Head' and aggregate taxable values
+state_head_tables = {}
+for state_head, group_df in result.groupby('State_ Head'):
+    aggregated_result_12 = (
+        group_df.groupby(['Outlet_ID','Billing Name' ,'DB_Code', 'Distributor_Name_x','State_ Head','DMS Type','DMS Flag','DB_Status'])
+        .agg({'Taxable_Value': 'sum'})
+        .reset_index()
+        .query('Taxable_Value >= 200000')
+    )
+    aggregated_result_12['Outlet_ID'] = aggregated_result_12['Outlet_ID'].astype(str).str.rstrip('.0')
+    aggregated_result_12['Taxable_Value'] = aggregated_result_12['Taxable_Value'].apply(lambda x: '{:,.2f}'.format(x))
+    aggregated_result_12 = aggregated_result_12[['Outlet_ID','Billing Name' ,'DB_Code','Distributor_Name_x', 'State_ Head', 'Taxable_Value','DMS Type','DMS Flag','DB_Status']]
+
+    # Rename columns
+    aggregated_result_12.rename(columns={'Taxable_Value': 'Overall Sec Value','Billing Name':'Outlet_Name','Distributor_Name_x':'Distributor_Name','DMS Type':'DMS_Type','DMS Flag':'DMS_Flag'}, inplace=True)
+
+
+    state_head_tables[state_head] = aggregated_result_12.to_html(index=False)
+
+
+
+
+
+# Reorder columns to have 'DB Code' and 'Distributor_Name_x' next to each other
+# Use the correct column names as they are in the DataFrame
+
+# Calculate the average lines billed per invoice
+aggregated_result['Average_Lines_Per_Invoice'] = aggregated_result['Invoice No.'] / aggregated_result['ID']
+
+
+# Calculate the average value billed per dealer
+aggregated_result['TP_per_Dealer'] = aggregated_result['Taxable_Value'] / aggregated_result['Outlet_ID']
+aggregated_result['TP_per_Dealer'] = aggregated_result['TP_per_Dealer'].apply(lambda x: '{:.2f}'.format(x) if not pd.isna(x) else '')
+
+# Format 'Average_Lines_Per_Invoice' column with 2 decimal places (when not NaN)
+aggregated_result['Average_Lines_Per_Invoice'] = aggregated_result['Average_Lines_Per_Invoice'].apply(
+    lambda x: '{:.2f}'.format(x) if not pd.isna(x) else '')
+
+# Replace NaN values in 'Taxable_Value' with 0 and convert the column to a string
+aggregated_result['Taxable_Value'] = aggregated_result['Taxable_Value'].fillna(0).astype(str)
+
+# Format 'Taxable_Value' with 2 decimal places (when not NaN)
+aggregated_result['Taxable_Value'] = aggregated_result['Taxable_Value'].apply(lambda x: '{:.2f}'.format(float(x)) if not pd.isna(x) else '')
+
+
+
+
+
+# Sort the data based on 'State Head'
+#aggregated_result = aggregated_result.sort_values(by='State_ Head')
+# Sort the data based on 'State Head'
+#aggregated_result_2 = aggregated_result_2.sort_values(by='State_ Head')
+
+# Use the correct column names as they are in the DataFrame
+# aggregated_result = aggregated_result[['DB_Code', 'Distributor_Name_x', 'State_ Head', 'Region','Taxable_Value', 'Outlet_ID', 'Average_Lines_Per_Invoice', 'TP per Dealer', 'Sale_Status']]
+
+# Rename columns
+# aggregated_result.rename(columns={'Distributor_Name_x': 'Distributor_Name','Taxable_Value':'Overall Sec Value'}, inplace=True)
+
+# Read the primary sales data into a DataFrame
+
+primary_sales_df = pd.read_excel(primary_sales_file_path)
+
+
+# Merge primary sales data with aggregated_result based on 'DB_Code'
+if not primary_sales_df.empty:
+    # Assuming 'Basic_Price' is the column name in primary_sales_df that you want to sum
+    primary_sales_df['Basic_Price'] = pd.to_numeric(primary_sales_df['Basic_Price'], errors='coerce')
+    basic_price_sum = primary_sales_df.groupby('DB_Code')['Basic_Price'].sum().reset_index()
+
+    # Merge with aggregated_result
+    aggregated_result = pd.merge(left=aggregated_result, right=basic_price_sum, left_on='DB_Code', right_on='DB_Code',
+                                 how='left')
+
+    # Fill NaN values in case there are no matching 'DB_Code' in primary_sales_df
+    aggregated_result['Basic_Price'] = aggregated_result['Basic_Price'].fillna(0)
+
+# Calculate the ratio of 'Overall Sec Value' to 'Overall Pri Value' and multiply by 100
+aggregated_result['Sec_to_Pri_Ratio'] = (aggregated_result['Taxable_Value'].astype(float) /
+                                          aggregated_result['Basic_Price'].astype(float)) * 100
+
+# Fill NaN values in case there are any
+aggregated_result['Sec_to_Pri_Ratio'] = aggregated_result['Sec_to_Pri_Ratio'].fillna(0)
+
+# Replace inf values with 0
+aggregated_result['Sec_to_Pri_Ratio'] = aggregated_result['Sec_to_Pri_Ratio'].replace([np.inf, -np.inf], 0)
+
+# Format the new column with 2 decimal places
+aggregated_result['Sec_to_Pri_Ratio'] = aggregated_result['Sec_to_Pri_Ratio'].apply(lambda x: '{:.2f}'.format(x))
+
+
+outlet_df = pd.read_excel(outlet_file)
+
+
+# Merge primary sales data with aggregated_result based on 'DB_Code'
+if not outlet_df.empty:
+    # Assuming 'Basic_Price' is the column name in primary_sales_df that you want to sum
+    outlet_sum = outlet_df.groupby('DB_Code')['Outlet_Id'].count().reset_index()
+    
+    
+
+    # Merge with aggregated_result
+    aggregated_result = pd.merge(left=aggregated_result, right=outlet_sum, left_on='DB_Code', right_on='DB_Code',how='left')
+
+       
+        
+    # Merge with aggregated_result
+    aggregated_result_2 = pd.merge(left=state_zone_df, right=outlet_df, left_on='DB_Code', right_on='DB_Code',how='left')
+
+    
+
+     # Fill NaN values in case there are no matching 'DB_Code' in primary_sales_df
+    aggregated_result['Outlet_Id'] = aggregated_result['Outlet_Id'].fillna(0)
+
+    
+    aggregated_result_2 = aggregated_result_2.groupby(['State_ Head']).agg({
+    'Outlet_Id': 'nunique',    
+    }).reset_index()
+
+    # If you want to rename the resulting column
+    aggregated_result_2 = aggregated_result_2.rename(columns={'Outlet_Id': 'Distinct_Outlet_Count'})
+
+  
+
+df_order = pd.read_excel(order_csv_file_path)
+   
+    # Assuming 'Net_Amount' is the column name in df_order that you want to sum
+df_order['Net_Amount'] = pd.to_numeric(df_order['Net_Amount'], errors='coerce')
+
+order_price_sum = df_order.groupby('DB_Code')['Net_Amount'].sum().reset_index()
+
+    # Merge with aggregated_result
+aggregated_result = pd.merge(left=aggregated_result, right=order_price_sum, on='DB_Code', how='left')
+
+    # Fill NaN values in case there are no matching 'DB_Code' in df_order
+aggregated_result['Net_Amount'] = aggregated_result['Net_Amount'].fillna(0)
+
+# Format 'Net_Amount' with comma style and convert to string
+#aggregated_result['Net_Amount'] = aggregated_result['Net_Amount'].apply(lambda x: '{:,.2f}'.format(x))
+
+aggregated_result['Eco_Percentage'] = (aggregated_result['Outlet_ID'] / aggregated_result['Outlet_Id']) * 100
+
+# If you want to format the 'Eco_Percen' column with two decimal places, you can use:
+aggregated_result['Eco_Percentage'] = aggregated_result['Eco_Percentage'].apply(lambda x: '{:.2f}'.format(x))
+
+
+df_calls = pd.read_excel(call_csv_file_path)
+
+if not df_calls.empty:
+
+    filtered_calls = df_calls[df_calls['Activity_Type'] == 'calls']
+
+        # Distinct count
+    Call_visist_unique = filtered_calls.groupby('DB_Code')['Outlet_ID_1'].nunique().reset_index()
+    Call_visist_unique = Call_visist_unique.rename(columns={'Outlet_ID_1': 'Unique_Visit'})
+    Call_visist_unique['Unique_Visit'] = Call_visist_unique['Unique_Visit'].fillna(0).astype(int)
+
+    # Total count
+    Call_visist = filtered_calls.groupby('DB_Code')['Outlet_ID_1'].count().reset_index()
+    Call_visist = Call_visist.rename(columns={'Outlet_ID_1': 'Total_Visit'})
+    Call_visist['Total_Visit'] = Call_visist['Total_Visit'].fillna(0).astype(int)
+# Merge both results
+    calls_result = pd.merge(left=Call_visist_unique, right=Call_visist, on='DB_Code', how='left')
+
+        # Merge with aggregated_result
+    aggregated_result = pd.merge(left=aggregated_result, right=calls_result, on='DB_Code', how='left')
+   
+
+
+
+
+# Rearrange the columns to move 'Basic_Price' next to 'Region'
+aggregated_result = aggregated_result[['Region', 'State_ Head','DB_Code', 'Distributor_Name_x','DMS Type','Outlet_Id' ,'Basic_Price', 'Taxable_Value','Sec_to_Pri_Ratio' ,'Net_Amount','Outlet_ID','Eco_Percentage','Average_Lines_Per_Invoice', 'TP_per_Dealer','Unique_Visit','Total_Visit','DMS Flag','DB_Status']]
+
+# Rename columns
+aggregated_result.rename(columns={'Distributor_Name_x': 'Distributor_Name','Basic_Price':'Overall_Pri_Value','Taxable_Value':'Overall_Sec_Value','Outlet_Id':'Dealer_Count','Outlet_ID':'ECO','Net_Amount':'Sec_Order_Value','DMS Type':'DMS_Type'}, inplace=True)
+
+
+# Convert 'Dealer_Count' to integer and then to string to remove ".0"
+aggregated_result['Dealer_Count'] = aggregated_result['Dealer_Count'].astype(int)
+
+# Convert 'Overall_Sec_Value' column to numeric
+aggregated_result['Overall_Sec_Value'] = pd.to_numeric(aggregated_result['Overall_Sec_Value'], errors='coerce')
+
+# Convert 'Overall_Sec_Value' column to numeric
+aggregated_result['TP_per_Dealer'] = pd.to_numeric(aggregated_result['TP_per_Dealer'], errors='coerce')
+
+
+# Check and convert data types
+aggregated_result['ECO'] = pd.to_numeric(aggregated_result['ECO'], errors='coerce')
+
+aggregated_result['Dealer_Count'] = pd.to_numeric(aggregated_result['Dealer_Count'], errors='coerce')
+
+# Handle NaN values
+aggregated_result['ECO'] = aggregated_result['ECO'].fillna(0)
+aggregated_result['Dealer_Count'] = aggregated_result['Dealer_Count'].fillna(0)
+aggregated_result = aggregated_result.dropna(subset=['Dealer_Count'])
+
+# Avg_Lines_Per_Bill = (aggregated_result['SKU_Code'].count() / aggregated_result['ID'].unique())
+
+
+
+# Convert 'Dealer_Count' to integer and then to string to remove ".0"
+aggregated_result['Dealer_Count'] = aggregated_result['Dealer_Count'].astype(int)
+
+# Calculate overall ECO percentage
+overall_eco_percentage = (aggregated_result['ECO'].sum() / aggregated_result['Dealer_Count'].sum()) * 100
+
+
+
+
+
+# Create a named style for comma style
+comma_style = NamedStyle(name='comma_style', number_format=numbers.FORMAT_NUMBER_COMMA_SEPARATED1, font=Font(size=10))
+
+# Export the result to a single Excel file with formatting, borders, comma style, and increased column width
+with pd.ExcelWriter(output_excel_path, engine='openpyxl') as writer:
+    try:
+        aggregated_result.to_excel(writer, index=False, sheet_name='Sheet1')
+    except Exception as e:
+        print(f"Error writing to Excel file: {e}")
+        raise
+
+    # Get the workbook and the sheet
+    workbook = writer.book
+    sheet = workbook['Sheet1']
+
+
+    # Create a fill object for green color
+    green_fill = PatternFill(start_color='00FF00', end_color='00FF00', fill_type='solid')
+
+    # Create a fill object for red color
+    red_fill = PatternFill(start_color='FF0000', end_color='FF0000', fill_type='solid')
+
+    # Create a border object
+    thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
+
+   
+    # Apply comma style to 'Basic_Price' column
+    for row_idx in range(2, sheet.max_row + 1):
+        cell = sheet.cell(row=row_idx, column=aggregated_result.columns.get_loc('Overall_Pri_Value') + 1)
+        cell.style = comma_style
+
+       # Apply comma style to 'Overall Sec Value' column
+    column_letter_Order = get_column_letter(aggregated_result.columns.get_loc('Overall_Sec_Value') + 1)
+    for row_idx in range(2, sheet.max_row + 1):
+        cell_order = sheet[f'{column_letter_Order}{row_idx}']
+        cell_order.style = comma_style  # Assign style to the cell
+    
+
+    # Apply comma style to 'Overall Sec Value' column
+    column_letter_Order = get_column_letter(aggregated_result.columns.get_loc('Sec_Order_Value') + 1)
+    for row_idx in range(2, sheet.max_row + 1):
+        cell_order = sheet[f'{column_letter_Order}{row_idx}']
+        cell_order.style = comma_style  # Assign style to the cell
+
+
+    # Apply percentage style to 'Sec to Pri Ratio' column
+    column_letter_ratio = get_column_letter(aggregated_result.columns.get_loc('Sec_to_Pri_Ratio') + 1)
+    for row_idx in range(2, sheet.max_row + 1):
+        cell_ratio = sheet[f'{column_letter_ratio}{row_idx}']
+        cell_ratio.style = comma_style  # Assign style to the cell
+
+        if cell_ratio.value != '':
+            cell_ratio.number_format = '0.00%'  # Set percentage format for the 'Sec to Pri Ratio' column
+            cell_ratio.value = float(cell_ratio.value) / 100  # Convert the cell value to a float and divide by 100 to trigger the formatting        
+        
+# Apply percentage style to 'Sec to Pri Ratio' column
+    column_letter_EP = get_column_letter(aggregated_result.columns.get_loc('Eco_Percentage') + 1)
+    for row_idx in range(2, sheet.max_row + 1):
+        cell_EP = sheet[f'{column_letter_EP}{row_idx}']
+        cell_EP.style = comma_style  # Assign style to the cell
+
+        if cell_EP.value != '':
+            cell_EP.number_format = '0.00%'  # Set percentage format for the 'Sec to Pri Ratio' column
+            cell_EP.value = float(cell_EP.value) / 100  # Convert the cell value to a float and divide by 100 to trigger the formatting        
+    
+        # Apply comma style and numeric format to 'Average_Lines_Per_Invoice' column
+    column_letter_Avg = get_column_letter(aggregated_result.columns.get_loc('Average_Lines_Per_Invoice') + 1)
+    for row_idx in range(2, sheet.max_row + 1):
+        cell_Avg = sheet[f'{column_letter_Avg}{row_idx}']
+        cell_Avg.style = comma_style  # Assign style to the cell
+        
+# Check if the cell value is not an empty string before converting to float
+        if cell_Avg.value != '':
+            cell_Avg.number_format = '#,##0.00'  # Set numeric format for the 'Average_Lines_Per_Invoice' column
+            cell_Avg.value = float(cell_Avg.value)  # Convert the cell value to a float to trigger the formatting
+    
+        # Apply comma style to 'TP per Dealer' column
+    column_letter_TP = get_column_letter(aggregated_result.columns.get_loc('TP_per_Dealer') + 1)
+    for row_idx in range(2, sheet.max_row + 1):
+        cell_TP = sheet[f'{column_letter_TP}{row_idx}']
+        cell_TP.style = comma_style  # Assign style to the cell
+
+        if cell_TP.value != '':
+            cell_TP.number_format = '#,##0.00'  # Set numeric format for the 'TP per Dealer' column
+            cell_TP.value = float(cell_TP.value)  # Convert the cell value to a float to trigger the formatting
+
+        
+        # Iterate through all cells and apply background color, borders, and increase column width
+    for col_idx, column in enumerate(aggregated_result.columns, start=1):
+        col_letter = chr(ord('A') + col_idx - 1)
+        max_len = max(aggregated_result[column].astype(str).apply(len).max(), len(str(column))) + 2
+        sheet.column_dimensions[col_letter].width = max_len
+
+        # Replace 'State_ Head' with 'State Head' in the header
+        if column == 'State_ Head':
+            sheet.cell(row=1, column=col_idx, value='State_Head')
+
+        # Replace 'Overall Sec Sales' with 'Overall Sec Value', and 'Outlet_ID' with 'Uqi Dealer\'s Billed' in the header
+        if column == 'Overall_Sec_Sales':
+            sheet.cell(row=1, column=col_idx, value='Overall_Sec_Value')
+        elif column == 'Outlet_ID':
+            sheet.cell(row=1, column=col_idx, value='Uqi_Dealer_Billed')
+
+
+
+
+    try:
+        workbook.save(output_excel_path)
+    except Exception as e:
+        print(f"Error saving Excel workbook: {e}")
+        raise
+
+
+
+# Modify the email body for all State_Heads
+current_date = datetime.now().strftime("%d/%m/%Y")
+
+
+
+# Assuming DSM_type is a column in your DataFrame
+filtered_result_zero_sec_value_dms = aggregated_result[(aggregated_result['Overall_Sec_Value'].astype(float) == 0) & (aggregated_result['DMS_Type'] == 'DMS')
+                                                            & (aggregated_result['DB_Status'] == 'Active')]
+# Extract the 'DB_code' column from the filtered data
+zero_sec_value_db_codes = filtered_result_zero_sec_value_dms['DB_Code']
+
+# Calculate the distinct count of 'DB_code' where 'Overall_Sec_Value' is 0 and 'DMS_Type' is 'DMS'
+distinct_zero_sec_value_db_codes_count = zero_sec_value_db_codes.nunique()
+
+
+
+
+count_sec_DB = aggregated_result['DB_Code'].count()
+
+# Calculate the total 'Taxable_Value'
+total_taxable_value = aggregated_result['Overall_Sec_Value'].astype(float).sum()
+
+
+
+# Assuming DSM_type is a column in your DataFrame
+filtered_result_sec = aggregated_result[(aggregated_result['DMS_Type'] == 'DMS') & (aggregated_result['DMS Flag'] == 'DMS Billing') ]
+
+# Calculate the total 'Taxable_Value'
+DMS_sales_sec = filtered_result_sec['Overall_Sec_Value'].astype(float).sum()
+
+# Assuming DSM_type is a column in your DataFrame
+filtered_result_sec_1 = aggregated_result[(aggregated_result['DMS_Type'] == 'DMS')  & (aggregated_result['DMS Flag'] == 'DMS Upload') ]
+
+# Calculate the total 'Taxable_Value'
+DMS_sales_sec_1 = filtered_result_sec_1['Overall_Sec_Value'].astype(float).sum()
+
+
+
+
+
+# Assuming DSM_type is a column in your DataFrame
+filtered_result = aggregated_result[(aggregated_result['DMS_Type'] == 'DMS') ]
+
+# Calculate the total 'Taxable_Value'
+DMS_sales = filtered_result['Overall_Pri_Value'].astype(float).sum()
+
+# Assuming DSM_type is a column in your DataFrame
+filtered_result_1 = aggregated_result[(aggregated_result['DMS_Type'] == 'Non DMS') ]
+
+# Calculate the total 'Taxable_Value'
+DMS_sales_1 = filtered_result_1['Overall_Pri_Value'].astype(float).sum()
+
+
+
+
+# Assuming DSM_type is a column in your DataFrame
+filtered_result_DB_count_dms = aggregated_result[(aggregated_result['DMS_Type'] == 'DMS') & (aggregated_result['DB_Status'] == 'Active')]
+
+# Calculate the unique count of 'Overall_Pri_Value' for the filtered DMS_Type
+DMS_sales_unique_count = filtered_result_DB_count_dms['DB_Code'].astype(int).nunique()
+
+# Assuming DSM_type is a column in your DataFrame
+filtered_result_DB_count_nondms = aggregated_result[(aggregated_result['DMS_Type'] == 'Non DMS') & (aggregated_result['DB_Status'] == 'Active')]
+
+# Calculate the unique count of 'Overall_Pri_Value' for the filtered DMS_Type
+nonDMS_sales_unique_count = filtered_result_DB_count_nondms['DB_Code'].astype(int).nunique()
+
+
+# Calculate the total 'Taxable_Value'
+total_taxable_value1 = aggregated_result['Overall_Pri_Value'].astype(float).sum()
+formatted_string = f"{total_taxable_value1:,.2f} {number_system}"
+
+
+Order_net_value = aggregated_result['Sec_Order_Value'].astype(float).sum()
+
+if DMS_sales != 0:
+    SecvsPri_Ratio = (filtered_result['Overall_Sec_Value'].sum() / DMS_sales) * 100
+
+
+Dealer_Count_1 = aggregated_result['Dealer_Count'].astype(int).sum()
+Eco_1 = aggregated_result['ECO'].astype(int).sum()
+overall_eco_percentage = (aggregated_result['ECO'].sum() / aggregated_result['Dealer_Count'].sum()) * 100
+Distinct_Dealer_SH = (aggregated_result_2['Distinct_Outlet_Count'].sum())
+
+
+Fuill_Rate = (aggregated_result['Overall_Sec_Value'].sum() / aggregated_result['Sec_Order_Value'].sum()) * 100
+Avg_Value_Per_Dealer = (aggregated_result['Overall_Sec_Value'].sum() / aggregated_result['ECO'].sum())
+unique_Visit = (aggregated_result['Unique_Visit'].sum())
+Total_Visit = (aggregated_result['Total_Visit'].sum())
+Visit_vs_ECO_Ratio = (aggregated_result['ECO'].sum() / aggregated_result['Unique_Visit'].sum()) * 100
+
+
+#Visit_Count = (aggregated_result['ECO'].sum() / aggregated_result['Unique_Visit'].sum()) * 100
+#Avg_Line_Per_Bill = (aggregated_result['Invoice No.'].sum() / aggregated_result['ID'].sum())
+
+
+
+alert_message = f"<strong style='color:red; font-size:18px;'>WARNING: As of {current_date}, {distinct_zero_sec_value_db_codes_count} out of {DMS_sales_unique_count} distributors have not updated their {current_month} month's sales.</strong>"
+
+
+
+# Assuming Eco_1 and Dealer_Count_1 are numeric columns
+
+# Modify the email body to include the total 'Taxable_Value'
+ # Modify the email body to include the total 'Taxable_Value'
+
+        # Modify the email body to include the total 'Taxable_Value' for the current state head
+        # Modify the email body to include the total 'Taxable_Value'
+email_body = f"""
+<html>
+    <head>
+    <style>
+    body {{
+        font-family: "Google Sans Primary", sans-serif;
+    }}
+
+    .secondary {{
+        font-family: "Roboto", sans-serif;
+    }}
+
+    h2 {{
+        font-size: 20px;
+        color: #003366;
+        margin-bottom: 10px;
+    }}
+
+    .metrics {{
+        display: flex;
+            flex-direction: column;
+        }}
+
+
+    .metrics-top,
+    .metrics-center-1
+    .metrics-center-2
+    .metrics-center-3
+    .metrics-center-4
+    .metrics-center-5
+    .metrics-center-6
+    .metrics-center-7
+    .metrics-center-8 {{
+        display: grid;
+        flex-wrap: wrap;
+        justify-content: space-between;
+        gap: 5px;
+    }}
+
+
+    .metric {{
+        border: 1px solid #ccc;
+        border-radius: 10px;
+        padding: 10px;
+        margin: 5px;
+        text-align: center;
+        background-color: #f5f5f5;
+    }}
+
+    .metric span {{
+        display: block;
+        font-size: 16px;
+    }}
+
+    .metric strong {{
+        font-weight: bold;
+    }}
+
+    .alert {{
+        color: red;
+        font-weight: bold;
+        margin-bottom: 10px;
+    }}
+    </style>
+    </head>
+    <body>
+    <p>Dear  Dhanraj,</p>
+    <p>Please find attached the Secondary sales tracker of statehead DBwise.</p>
+    <p class="alert">{alert_message}</p>
+
+    <h2>Metrics Overview:</h2>
+    <div class="metrics">
+        <div class="metrics-center-1">
+            <div class="metric secondary" style="display: grid; grid-template-columns: 1fr auto; gap: 5px; background-color: #f5f5f5; padding: 10px; margin: 5px;">
+            <div style="font-weight: bold; align-self: center;">Overall Primary Value</div>
+            <div style="text-align: center; align-self: center;"><span style="color: #003366;font-size: 20px;"> {total_taxable_value1:,.2f}</span></div>
+            </div>
+
+            <div class="metric secondary" style="display: grid; grid-template-columns: 1fr auto; gap: 5px; background-color: #f5f5f5; padding: 10px; margin: 5px;">
+            <div style="font-weight: bold; align-self: center;">DMS DB's Value</div>
+            <div style="text-align: center; align-self: center;"><span style="color: #003366;font-size: 20px;"> {DMS_sales:,.2f}</span></div>
+            </div>
+
+            
+            <div class="metric secondary" style="display: grid; grid-template-columns: 1fr auto; gap: 5px; background-color: #f5f5f5; padding: 10px; margin: 5px;">
+            <div style="font-weight: bold; align-self: center;">Direct DB's Value</div>
+            <div style="text-align: center; align-self: center;"><span style="color: #003366;font-size: 20px;"> {DMS_sales_1:,.2f}</span></div>
+            </div>
+        </div>
+        <div class="metrics-center-2">
+
+
+
+            <div class="metric secondary" style="display: grid; grid-template-columns: 1fr auto; gap: 5px; background-color: #f5f5f5; padding: 10px; margin: 5px;">
+            <div style="font-weight: bold; align-self: center;">Overall Secondary Value</div>
+            <div style="text-align: center; align-self: center;"><span style="color: #003366;font-size: 20px;">{total_taxable_value:,.2f}</span></div>
+            </div>
+
+
+            <div class="metric secondary" style="display: grid; grid-template-columns: 1fr auto; gap: 5px; background-color: #f5f5f5; padding: 10px; margin: 5px;">
+            <div style="font-weight: bold; align-self: center;">Sec Vs Pri Ratio</div>
+            <div style="text-align: center; align-self: center;"><span style="color: #003366;font-size: 20px;">{SecvsPri_Ratio:.2f}%</span></div>
+            </div>
+        
+            <div class="metric secondary" style="display: grid; grid-template-columns: 1fr auto; gap: 5px; background-color: #f5f5f5; padding: 10px; margin: 5px;">
+            <div style="font-weight: bold; align-self: center;">Secondary Order Value</div>
+            <div style="text-align: center; align-self: center;"><span style="color: #003366;font-size: 20px;">{Order_net_value:,.2f}</span></div>
+            </div>
+        </div>
+        
+        <div class="metrics-center-3">
+            <div class="metric secondary" style="display: grid; grid-template-columns: 1fr auto; gap: 5px; background-color: #f5f5f5; padding: 10px; margin: 5px;">
+            <div style="font-weight: bold; align-self: center;">Avg Value Per Dealer</div>
+            <div style="text-align: center; align-self: center;"><span style="color: #003366;font-size: 20px;">{Avg_Value_Per_Dealer:,.2f}</span></div>
+            </div>
+
+            <div class="metric secondary" style="display: grid; grid-template-columns: 1fr auto; gap: 5px; background-color: #f5f5f5; padding: 10px; margin: 5px;">
+            <div style="font-weight: bold; align-self: center;">DMS DB's Count </div>
+            <div style="text-align: center; align-self: center;"><span style="color: #003366;font-size: 20px;">{DMS_sales_unique_count}</span></div>
+            </div>
+
+            <div class="metric secondary" style="display: grid; grid-template-columns: 1fr auto; gap: 5px; background-color: #f5f5f5; padding: 10px; margin: 5px;">
+            <div style="font-weight: bold; align-self: center;">Direct DB's Count</div>
+            <div style="text-align: center; align-self: center;"><span style="color: #003366;font-size: 20px;">{nonDMS_sales_unique_count}</span></div>
+            </div>
+        </div>
+        <div class="metrics-center-4">
+       
+
+        
+            <div class="metric secondary" style="display: grid; grid-template-columns: 1fr auto; gap: 5px; background-color: #f5f5f5; padding: 10px; margin: 5px;">
+            <div style="font-weight: bold; align-self: center;">Order vs Sec Ratio</div>
+            <div style="text-align: center; align-self: center;"><span style="color: #003366;font-size: 20px;">{Fuill_Rate:.2f}%</span></div>
+            </div>
+
+              <div class="metric secondary" style="display: grid; grid-template-columns: 1fr auto; gap: 5px; background-color: #f5f5f5; padding: 10px; margin: 5px;">
+            <div style="font-weight: bold; align-self: center;">Active Dealer Count</div>
+            <div style="text-align: center; align-self: center;"><span style="color: #003366;font-size: 20px;">{Distinct_Dealer_SH}</span></div>
+            </div>
+
+            <div class="metric secondary" style="display: grid; grid-template-columns: 1fr auto; gap: 5px; background-color: #f5f5f5; padding: 10px; margin: 5px;">
+            <div style="font-weight: bold; align-self: center;">Effective Coverage</div>
+            <div style="text-align: center; align-self: center;"><span style="color: #003366;font-size: 20px;">{Eco_1}</span></div>
+            </div>
+        </div>
+        <div class="metrics-center-5">
+         
+            <div class="metric secondary" style="display: grid; grid-template-columns: 1fr auto; gap: 5px; background-color: #f5f5f5; padding: 10px; margin: 5px;">
+            <div style="font-weight: bold; align-self: center;">ECO Vs Dealer Ratio</div>
+            <div style="text-align: center; align-self: center;"><span style="color: #003366;font-size: 20px;">{overall_eco_percentage:.2f}%</span></div>
+            </div>
+
+                  
+
+            <div class="metric secondary" style="display: grid; grid-template-columns: 1fr auto; gap: 5px; background-color: #f5f5f5; padding: 10px; margin: 5px;">
+            <div style="font-weight: bold; align-self: center;">Unique Visit Dealers </div>
+            <div style="text-align: center; align-self: center;"><span style="color: #003366;font-size: 20px;">{unique_Visit:.0f}</span></div>
+            </div>
+
+            <div class="metric secondary" style="display: grid; grid-template-columns: 1fr auto; gap: 5px; background-color: #f5f5f5; padding: 10px; margin: 5px;">
+            <div style="font-weight: bold; align-self: center;">ECO Vs Visit Ratio</div>
+            <div style="text-align: center; align-self: center;"><span style="color: #003366;font-size: 20px;">{Visit_vs_ECO_Ratio:.2f}%</span></div>
+            </div>
+
+        </div>
+        <div class="metrics-center-6"> 
+           
+
+            <div class="metric secondary" style="display: grid; grid-template-columns: 1fr auto; gap: 5px; background-color: #f5f5f5; padding: 10px; margin: 5px;">
+            <div style="font-weight: bold; align-self: center;">Total Visists </div>
+            <div style="text-align: center; align-self: center;"><span style="color: #003366;font-size: 20px;">{Total_Visit:.0f}</span></div>
+            </div>
+
+            <div class="metric secondary" style="display: grid; grid-template-columns: 1fr auto; gap: 5px; background-color: #f5f5f5; padding: 10px; margin: 5px;">
+            <div style="font-weight: bold; align-self: center;">DMS Billing DB's Value </div>
+            <div style="text-align: center; align-self: center;"><span style="color: #003366;font-size: 20px;">{DMS_sales_sec:,.2f}</span></div>
+            </div>
+
+            <div class="metric secondary" style="display: grid; grid-template-columns: 1fr auto; gap: 5px; background-color: #f5f5f5; padding: 10px; margin: 5px;">
+            <div style="font-weight: bold; align-self: center;">DMS Upload DB's Value </div>
+            <div style="text-align: center; align-self: center;"><span style="color: #003366;font-size: 20px;">{DMS_sales_sec_1:,.2f}</span></div>
+            </div>
+           
+        </div>    
+
+            <div class="metrics-center-7">    
+          
+
+            </div>  
+    </div>
+
+    <h1>Dealer's Billed More Than 2Lakhs,</h1>
+    
+    </body>
+    </html>
+    """
+
+
+# Combine the email body text and modified HTML table
+combined_email_body = f"{email_body}"
+
+
+# Add state-wise tables
+for state_head, state_head_table in state_head_tables.items():
+    combined_email_body += f"<h2>{state_head} : Dealer List:</h2>"
+    combined_email_body += state_head_table
+
+# Add the original HTML table
+#combined_email_body += f"<h2>Overall Metrics:</h2>{state_head_table}"
+
+
+# Define the email address and CC for the state head
+state_head_email = 'dhanraj.u@stovekraft.com'
+#state_head_email = 'dhanraj.u@stovekraft.com'
+cc_email = ['dhanraj.u@stovekraft.com','balakumar.s@stovekraft.com','sourabh.dhillon@stovekraft.com','ramaseshan.natarajan@stovekraft.com','rohith.s@stovekraft.com']  # Add CC email addresses to this list
+#cc_email = ['balakumar.s@stovekraft.com']
+# Send email to the single state head with CC and HTML table in the body
+send_email(sender_email, state_head_email, cc_email, email_subject, combined_email_body, output_excel_path, email_host, email_port, email_username, email_password)
+
+print("File saved and email sent successfully.")
+
+
